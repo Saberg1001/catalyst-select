@@ -50,7 +50,7 @@ def generate_initial_db(slab):
 
     sg = StartGenerator(slab, atom_numbers, blmin, box_to_place_in=[p0, [v1, v2, v3]], test_too_far=False)
 
-    db = PrepareDB(
+    db =PrepareDB(
         db_file_name='gadb.db', simulation_cell=slab)
     for i in range(Config.pop_size):
         candidate = sg.get_new_candidate()
@@ -78,16 +78,13 @@ def relax_structure(atoms, calc, gen, indiv_id):
     # 保存到总结构库
     shutil.copy(final_structure,
                 Config.output_root / "all_structures" / f"gen{gen}_id{indiv_id}.cif")
-    with open(str(logfile), "r") as f:
-        lines = f.readlines()
-        energy = lines[-1].split()[-2]
-    return energy
-
+    return atoms.get_potential_energy(), atoms
 
 
 def record_results(generation, population, db):
     # 当前代记录
     gen_dir = Config.output_root / f"generation_{generation}"
+    gen_dir.mkdir(exist_ok=True)
 
     # 写入JSON格式的完整信息
     generation_data = []
@@ -133,10 +130,11 @@ def main():
     if not Path(db_file).exists():
         db = generate_initial_db(slab)
     else:
-        db = DataConnection('gadb.db')
+        db = DataConnection(db_file)
         if db.get_number_of_unrelaxed_candidates() == 0:
-            generate_initial_db(slab)
-
+            # 如果数据库存在且没有未松弛结构，则需要清空数据库
+            Path(db_file).unlink()
+            db = generate_initial_db(slab)
 
         # 4. 设置GA算子
     n_top = len(slab)  # 基底原子数
@@ -177,7 +175,7 @@ def main():
         # 评估未松弛的候选结构
         while db.get_number_of_unrelaxed_candidates() > 0:
             a = db.get_an_unrelaxed_candidate()
-            energy = relax_structure(a, calc, gen + 1, a.info['confid'].split('_')[-1])
+            energy = float(relax_structure(a, calc, gen + 1, a.info['confid'])[0])
             set_raw_score(a, -energy)  # 最小化能量
             db.add_relaxed_step(a)
 
@@ -192,24 +190,23 @@ def main():
             print("GA已收敛!")
             break
 
-    # 产生新一代
-    print("Generating new candidates...")
-    for _ in range(Config.pop_size):
-        # 选择
-        a1, a2 = pop.get_two_candidates()
+        # 产生新一代
+        print("Generating new candidates...")
+        for i in range(Config.pop_size):
+            # 选择
+            a1, a2 = pop.get_two_candidates()
 
-        # 变异或交叉
-        if np.random.random() < Config.crossover_prob:
-            a3, desc = pairing.get_new_individual([a1, a2])
-            a3.info['data'] = {'parents': [a1.info['confid'], a2.info['confid']]}
-            a3.info['origin'] = 'crossover'
-        else:
-            a3, desc = rattle.get_new_individual([a1])
-            a3.info['data'] = {'parents': [a1.info['confid']]}
-            a3.info['origin'] = 'mutation'
-
-        a3.info['confid'] = f"gen{gen + 1}_id{db.get_number_of_unrelaxed_candidates()}"
-        db.add_unrelaxed_candidate(a3)
+            # 变异或交叉
+            if np.random.random() < Config.crossover_prob:
+                a3, desc = pairing.get_new_individual([a1, a2])
+                a3.info['data'] = {'parents': [a1.info['confid'], a2.info['confid']]}
+                a3.info['origin'] = 'crossover'
+            else:
+                a3, desc = rattle.get_new_individual([a1])
+                a3.info['data'] = {'parents': [a1.info['confid']]}
+                a3.info['origin'] = 'mutation'
+            a3.info['confid'] = f"gen{gen + 2}_id{i}"
+            db.add_unrelaxed_candidate(a3)
 
     # 保存最佳结构
     best = pop.get_current_population()[0]

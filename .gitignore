@@ -1,4 +1,4 @@
 .idea/
 *.egg-info/
-
+ga_standard_results/
 *.csv
