@@ -55,7 +55,7 @@ def generate_initial_db(slab):
     for i in range(Config.pop_size):
         candidate = sg.get_new_candidate()
         candidate.info['confid'] = f"gen0_id{i}"
-        db.add_unrelaxed_candidate(candidate)
+        db.add_unrelaxed_candidate(candidate, description="x:x")
     return db
 
 
@@ -136,7 +136,7 @@ def main():
             Path(db_file).unlink()
             db = generate_initial_db(slab)
 
-        # 4. 设置GA算子
+    # 4. 设置GA算子
     n_top = len(slab)  # 基底原子数
 
     # 交叉算子
