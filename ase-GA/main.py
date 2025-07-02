@@ -8,6 +8,7 @@ from ase.ga.convergence import GenerationRepetitionConvergence
 from ase.ga.cutandsplicepairing import CutAndSplicePairing
 from ase.ga.data import DataConnection, PrepareDB
 from ase.ga.population import Population
+from ase.ga.standard_comparators import InteratomicDistanceComparator
 from ase.ga.standardmutations import RattleMutation
 from ase.ga.startgenerator import StartGenerator
 from ase.ga.utilities import closest_distances_generator, get_all_atom_types
@@ -15,19 +16,8 @@ from ase.io import read, write
 from ase.optimize import BFGS
 from m3gnet.models import M3GNet, M3GNetCalculator, Potential
 
-
-class Config:
-    cif_file = './cif/substrate.cif'
-    model_path = Path(__file__).parent.parent / "MP-2021.2.8-EFS/"
-    pop_size = 20
-    n_generations = 10
-    ratio_of_covalent_radii = 0.7
-    fmax = 0.5
-    output_root = Path("./ga_standard_results")
-    tournament_size = 3
-    rattle_mutation_prob = 0.3
-    crossover_prob = 0.7
-    Z = 151
+from config import Config
+from constant import DBFileName
 
 
 def init_dirs():
@@ -36,7 +26,7 @@ def init_dirs():
     (Config.output_root / "summary").mkdir(exist_ok=True)
 
 
-def generate_initial_db(slab):
+def generate_initial_db(slab) -> PrepareDB:
     atom_numbers = [8] * 21 + [74] * 1 + [23] * 1  # 撒21个O，1个W，1个V
     pos = slab.get_positions()
     cell = slab.get_cell()
@@ -51,7 +41,7 @@ def generate_initial_db(slab):
 
     sg = StartGenerator(slab, atom_numbers, blmin, box_to_place_in=[p0, [v1, v2, v3]], test_too_far=False)
 
-    db = PrepareDB(db_file_name='gadb.db', simulation_cell=slab)
+    db = PrepareDB(db_file_name=DBFileName, simulation_cell=slab)
     for i in range(Config.pop_size):
         candidate = sg.get_new_candidate()
         candidate.info['confid'] = f"gen0_id{i}"
@@ -126,14 +116,13 @@ def main():
         potential=Potential(M3GNet.from_dir(Config.model_path)),
         device="cuda"
     )
-    db_file = 'gadb.db'
-    if not Path(db_file).exists():
+    if not Path(DBFileName).exists():
         db = generate_initial_db(slab)
     else:
-        db = DataConnection(db_file)
-        if db.get_number_of_unrelaxed_candidates() == 0:
+        dc = DataConnection(DBFileName)
+        if dc.get_number_of_unrelaxed_candidates() == 0:
             # 如果数据库存在且没有未松弛结构，则需要清空数据库
-            Path(db_file).unlink()
+            Path(DBFileName).unlink()
             db = generate_initial_db(slab)
 
     # 4. 设置GA算子
@@ -151,8 +140,6 @@ def main():
                             rattle_strength=0.3,
                             rattle_prop=Config.rattle_mutation_prob)
 
-    from ase.ga.standard_comparators import InteratomicDistanceComparator
-
     # 比较器
     comp = InteratomicDistanceComparator(n_top=n_top,
                                          pair_cor_cum_diff=0.015,
@@ -160,10 +147,8 @@ def main():
                                          dE=0.02)
 
     # 5. 主循环
-    pop = Population(data_connection=db,
-                     population_size=Config.pop_size,
-                     comparator=comp)
-
+    dc = DataConnection(db_file_name=DBFileName)
+    pop = Population(data_connection=dc, population_size=Config.pop_size, comparator=comp)
     conv = GenerationRepetitionConvergence(population_instance=pop,  # 必须传入Population实例
                                            number_of_generations=5,  # 检查间隔代数
                                            number_of_individuals=3)  # 需要重复的个体数
@@ -172,11 +157,11 @@ def main():
         print(f"\n--- Generation {gen + 1}/{Config.n_generations} ---")
 
         # 评估未松弛的候选结构
-        while db.get_number_of_unrelaxed_candidates() > 0:
-            a = db.get_an_unrelaxed_candidate()
+        while dc.get_number_of_unrelaxed_candidates() > 0:
+            a = dc.get_an_unrelaxed_candidate()
             energy = float(relax_structure(a, calc, gen + 1, a.info['confid'])[0])
             set_raw_score(a, -energy)  # 最小化能量
-            db.add_relaxed_step(a)
+            dc.add_relaxed_step(a)
 
         # 获取当前种群
         population = pop.get_current_population()
