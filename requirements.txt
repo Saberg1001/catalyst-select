@@ -1,0 +1,10 @@
+# Win
+tensorflow==2.10.0
+
+keras==2.10.0
+pytorch==1.12.1
+dgl==0.9.1
+pymatgen==2023.7.20
+matgl
+m3gnet
+ase

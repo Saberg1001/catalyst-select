@@ -1,151 +1,223 @@
-import sys
-from ase import Atoms
-from ase.ga import get_raw_score
-from ase.ga.startgenerator import StartGenerator
-from ase.ga.utilities import closest_distances_generator
-from ase.constraints import FixAtoms
-from ase.io import read
+import json
+import shutil
+from pathlib import Path
+
 import numpy as np
-import argparse
+from ase.ga import set_raw_score
+from ase.ga.convergence import GenerationRepetitionConvergence
+from ase.ga.cutandsplicepairing import CutAndSplicePairing
+from ase.ga.data import DataConnection, PrepareDB
+from ase.ga.population import Population
+from ase.ga.standardmutations import RattleMutation
+from ase.ga.startgenerator import StartGenerator
+from ase.ga.utilities import closest_distances_generator, get_all_atom_types
+from ase.io import read, write
+from ase.optimize import BFGS
+from m3gnet.models import M3GNet, M3GNetCalculator, Potential
 
 
+class Config:
+    cif_file = './cif/substrate.cif'
+    model_path = "/mnt/d/project/m3gnet/pretrained/MP-2021.2.8-EFS/"
+    pop_size = 20
+    n_generations = 10
+    ratio_of_covalent_radii = 0.7
+    fmax = 0.5
+    output_root = Path("./ga_standard_results")
+    tournament_size = 3
+    rattle_mutation_prob = 0.3
+    crossover_prob = 0.7
+    Z = 151
+
+def init_dirs():
+    Config.output_root.mkdir(exist_ok=True)
+    (Config.output_root / "all_structures").mkdir(exist_ok=True)
+    (Config.output_root / "summary").mkdir(exist_ok=True)
+
+
+def generate_initial_db(slab):
+    atom_numbers = [8] * 21 + [74] * 1 + [23] * 1  # 撒21个O，1个W，1个V
+    pos = slab.get_positions()
+    cell = slab.get_cell()
+    p0 = np.array([0.0, 0.0, np.max(pos[:, 2]) + 0.8])  # 表面最高点上方0.8Å
+    v1 = cell[0, :] * 0.9  # 使用90%的晶胞x方向
+    v2 = cell[1, :] * 0.9  # 使用90%的晶胞y方向
+    v3 = np.array([0.0, 0.0, 4.0])  # 在z方向给出4Å的空间
+
+    unique_atom_types = get_all_atom_types(slab, atom_numbers)
+    blmin = closest_distances_generator(atom_numbers=unique_atom_types,
+                                        ratio_of_covalent_radii=Config.ratio_of_covalent_radii)
+
+    sg = StartGenerator(slab, atom_numbers, blmin, box_to_place_in=[p0, [v1, v2, v3]], test_too_far=False)
+
+    db = PrepareDB(
+        db_file_name='gadb.db', simulation_cell=slab)
+    for i in range(Config.pop_size):
+        candidate = sg.get_new_candidate()
+        candidate.info['confid'] = f"gen0_id{i}"
+        db.add_unrelaxed_candidate(candidate)
+    return db
+
+
+def relax_structure(atoms, calc, gen, indiv_id):
+    atoms = atoms.copy()
+    atoms.calc = calc
+
+    gen_dir = Config.output_root / f"generation_{gen}"
+    gen_dir.mkdir(exist_ok=True)
+
+    logfile = gen_dir / f"gen{gen}_id{indiv_id}.log"
+
+    opt = BFGS(atoms, logfile=str(logfile), trajectory=None)
+    opt.run(fmax=Config.fmax)
+
+    # 保存优化后结构
+    final_structure = gen_dir / f"gen{gen}_id{indiv_id}_final.cif"
+    write(str(final_structure), atoms, format="cif")
+
+    # 保存到总结构库
+    shutil.copy(final_structure,
+                Config.output_root / "all_structures" / f"gen{gen}_id{indiv_id}.cif")
+    with open(str(logfile), "r") as f:
+        lines = f.readlines()
+        energy = lines[-1].split()[-2]
+    return energy
+
+
+
+def record_results(generation, population, db):
+    # 当前代记录
+    gen_dir = Config.output_root / f"generation_{generation}"
+
+    # 写入JSON格式的完整信息
+    generation_data = []
+    for indiv in population:
+        gen_data = {
+            "structure_id": indiv.info['confid'],
+            "energy": indiv.get_potential_energy(),
+            "origin": indiv.info.get('origin', 'unknown'),
+            "parents": indiv.info.get('parents', [])
+        }
+        generation_data.append(gen_data)
+
+    with open(gen_dir / "generation_info.json", 'w') as f:
+        json.dump(generation_data, f, indent=2)
+
+    # 全局记录
+    summary_file = Config.output_root / "summary" / "all_energies.csv"
+    with open(summary_file, "a") as f:
+        for indiv in population:
+            f.write(f"{generation},{indiv.info['confid']},{indiv.get_potential_energy():.6f}\n")
+
+    # 按能量排序的记录
+    sorted_pop = sorted(population, key=lambda x: x.get_potential_energy())
+    sorted_file = Config.output_root / "summary" / "sorted_energies.csv"
+    with open(sorted_file, "w") as f:
+        f.write("rank,generation,structure_id,energy,origin\n")
+        for rank, indiv in enumerate(sorted_pop):
+            f.write(
+                f"{rank + 1},{generation},{indiv.info['confid']},{indiv.get_potential_energy():.6f},"
+                f"{indiv.info.get('origin', 'unknown')}\n")
+
+
+# ---Step4: GA主循环 ---
 def main():
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='使用遗传算法优化指定高度上的原子位置')
-    parser.add_argument('--slab_file', type=str, required=True,
-                        help='基底结构文件路径 (支持POSCAR, CIF, XYZ等格式)')
-    parser.add_argument('--z_threshold', type=float, default=10.0,
-                        help='Z轴高度阈值(埃)')
-    parser.add_argument('--population', type=int, default=10,
-                        help='遗传算法种群大小')
-    parser.add_argument('--generations', type=int, default=20,
-                        help='遗传算法迭代次数')
-    args = parser.parse_args()
-
-    # 从文件加载基底结构
-    slab = read(args.slab_file)
-    print(f"已加载基底结构: {args.slab_file}")
-    print(f"基底包含 {len(slab)} 个原子")
-    print(f"晶胞尺寸: {slab.cell.cellpar()}")
-
-    # 待添加的元素组成
-    element_counts = {'O': 16, 'W': 1, 'V': 1}
-
-    # 创建初始结构 (包含基底和随机位置的添加原子)
-    atoms = create_initial_structure(slab, args.z_threshold, element_counts)
-
-    # 设置约束: 固定z坐标低于阈值的基底原子
-    constraint = FixAtoms(indices=get_fixed_indices(atoms, args.z_threshold))
-    atoms.set_constraint(constraint)
-
-    # 设置最小原子间距规则
-    blmin = closest_distances_generator(element_counts.keys(),
-                                        bond_factor=0.8,
-                                        respect_valency=False)
-
-    # 创建遗传算法起始生成器
-    box = get_optimization_region(slab, args.z_threshold)
-    generator = StartGenerator(atoms,
-                               lambda a: get_idx_to_optimize(a, args.z_threshold, element_counts),
-                               blmin,
-                               box_volume=box,
-                               number_of_variable_cells=0,
-                               test_dist_to_slab=False)
-
-    # 初始化种群
-    population = [generator.get_new_individual() for _ in range(args.population)]
-
-    # 遗传算法主循环
-    print(f"\n开始遗传算法优化 (种群={args.population}, 代数={args.generations})")
-    for gen in range(args.generations):
-        new_population = []
-
-        # 1. 评估当前种群
-        for individual in population:
-            energy = evaluate(individual)
-            individual.info['energy'] = energy
-            individual.info['key_value_pairs'] = {'raw_score': -energy}
-
-        # 2. 选择父代
-        parents = select_parents(population)
-
-        # 3. 生成新后代
-        for _ in range(args.population):
-            offspring = generator.get_new_individual(parents)
-            new_population.append(offspring)
-
-        # 4. 替换旧种群
-        population = new_population
-
-        # 报告当前最佳能量
-        best_energy = min(atom.info['energy'] for atom in population)
-        print(f"代数 {gen + 1}/{args.generations}: 最低能量 = {best_energy:.6f}")
-
-    # 输出最优结构
-    best_atoms = min(population, key=lambda a: a.info['energy'])
-    print("\n优化完成!")
-    print(f"最低能量结构: {best_atoms.info['energy']:.6f}")
-    best_atoms.write('optimized_structure.xyz')
-    print("已保存最优结构到 optimized_structure.xyz")
+    init_dirs()
+    slab = read(Config.cif_file)
+    slab.pbc = [True, True, False]
+    calc = M3GNetCalculator(
+        potential=Potential(M3GNet.from_dir(Config.model_path)),
+        device="cuda"
+    )
+    db_file = 'gadb.db'
+    if not Path(db_file).exists():
+        db = generate_initial_db(slab)
+    else:
+        db = DataConnection('gadb.db')
+        if db.get_number_of_unrelaxed_candidates() == 0:
+            generate_initial_db(slab)
 
 
-def create_initial_structure(slab, z_threshold, element_counts):
-    """创建包含基底和随机位置添加原子的结构"""
-    atoms = slab.copy()
+        # 4. 设置GA算子
+    n_top = len(slab)  # 基底原子数
 
-    # 添加新原子
-    symbols = []
-    for sym, count in element_counts.items():
-        symbols.extend([sym] * count)
-    num_to_add = sum(element_counts.values())
+    # 交叉算子
+    pairing = CutAndSplicePairing(slab, n_top,
+                                  blmin=0.7,
+                                  p1=Config.crossover_prob,
+                                  p2=0)
 
-    # 在基底上方随机生成位置
-    cell = atoms.cell.cellpar()
-    if cell[2] < z_threshold + 5:
-        print(f"警告: 晶胞Z高度({cell[2]} Å)小于阈值+5({z_threshold + 5} Å)，可能需要增大晶胞")
+    # 变异算子
+    rattle = RattleMutation(blmin=0.7,
+                            n_top=n_top,
+                            rattle_strength=0.3,
+                            rattle_prop=Config.rattle_mutation_prob)
 
-    # 在晶胞XY平面内随机，Z在阈值以上
-    positions = np.zeros((num_to_add, 3))
-    positions[:, 0] = np.random.uniform(0, cell[0], num_to_add)
-    positions[:, 1] = np.random.uniform(0, cell[1], num_to_add)
-    positions[:, 2] = np.random.uniform(z_threshold, min(cell[2], z_threshold + 10), num_to_add)
+    from ase.ga.standard_comparators import InteratomicDistanceComparator
 
-    # 添加新原子
-    atoms += Atoms(symbols=symbols, positions=positions)
+    # 比较器
+    comp = InteratomicDistanceComparator(n_top=n_top,
+                                         pair_cor_cum_diff=0.015,
+                                         pair_cor_max=0.7,
+                                         dE=0.02)
 
-    print(f"添加了 {num_to_add} 个原子在Z > {z_threshold} Å区域")
-    return atoms
+    # 5. 主循环
 
+    pop = Population(data_connection=db,
+                     population_size=Config.pop_size,
+                     comparator=comp)
 
-def get_fixed_indices(atoms, z_threshold):
-    """获取固定原子的索引 (Z < 阈值)"""
-    return [i for i, atom in enumerate(atoms) if atom.position[2] < z_threshold]
+    conv = GenerationRepetitionConvergence(population_instance=pop,  # 必须传入Population实例
+                                           number_of_generations=5,  # 检查间隔代数
+                                           number_of_individuals=3)  # 需要重复的个体数
 
+    for gen in range(Config.n_generations):
+        print(f"\n--- Generation {gen + 1}/{Config.n_generations} ---")
 
-def get_idx_to_optimize(atoms, z_threshold, element_counts):
-    """获取优化原子的索引 (指定元素且Z >= 阈值)"""
-    return [i for i, atom in enumerate(atoms)
-            if atom.symbol in element_counts and atom.position[2] >= z_threshold]
+        # 评估未松弛的候选结构
+        while db.get_number_of_unrelaxed_candidates() > 0:
+            a = db.get_an_unrelaxed_candidate()
+            energy = relax_structure(a, calc, gen + 1, a.info['confid'].split('_')[-1])
+            set_raw_score(a, -energy)  # 最小化能量
+            db.add_relaxed_step(a)
 
+        # 获取当前种群
+        population = pop.get_current_population()
 
-def get_optimization_region(slab, z_threshold):
-    """获取优化区域 (XY为基底尺寸, Z从阈值开始)"""
-    cell = slab.cell.cellpar()
-    return np.array([[0, 0, z_threshold],
-                     [cell[0], cell[1], max(cell[2], z_threshold + 10)]])
+        # 记录结果
+        record_results(gen + 1, population, db)
 
+        # 检查收敛
+        if conv.converged():
+            print("GA已收敛!")
+            break
 
-def select_parents(population):
-    """锦标赛选择父代"""
-    tournament_size = min(5, len(population))
-    participants = np.random.choice(population, size=tournament_size, replace=False)
-    return [min(participants, key=lambda a: a.info['energy'])]
+    # 产生新一代
+    print("Generating new candidates...")
+    for _ in range(Config.pop_size):
+        # 选择
+        a1, a2 = pop.get_two_candidates()
 
+        # 变异或交叉
+        if np.random.random() < Config.crossover_prob:
+            a3, desc = pairing.get_new_individual([a1, a2])
+            a3.info['data'] = {'parents': [a1.info['confid'], a2.info['confid']]}
+            a3.info['origin'] = 'crossover'
+        else:
+            a3, desc = rattle.get_new_individual([a1])
+            a3.info['data'] = {'parents': [a1.info['confid']]}
+            a3.info['origin'] = 'mutation'
 
-def evaluate(atoms):
-    """评估函数 - 实际应用中应替换为DFT计算"""
-    # 此处仅为示例 - 实际应用中应使用DFT或ML势能进行能量计算
-    return np.random.rand() * 100  # 替换为实际计算
+        a3.info['confid'] = f"gen{gen + 1}_id{db.get_number_of_unrelaxed_candidates()}"
+        db.add_unrelaxed_candidate(a3)
+
+    # 保存最佳结构
+    best = pop.get_current_population()[0]
+    best_structure_file = Config.output_root / "summary" / "best_structure.cif"
+    write(str(best_structure_file), best, format='cif')
+
+    print("\nGA优化完成！结果保存在:", Config.output_root)
+    print(f"最佳结构能量: {best.get_potential_energy():.4f} eV")
 
 
 if __name__ == "__main__":
