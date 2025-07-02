@@ -18,7 +18,7 @@ from m3gnet.models import M3GNet, M3GNetCalculator, Potential
 
 class Config:
     cif_file = './cif/substrate.cif'
-    model_path = "/mnt/d/project/m3gnet/pretrained/MP-2021.2.8-EFS/"
+    model_path = Path(__file__).parent.parent / "MP-2021.2.8-EFS/"
     pop_size = 20
     n_generations = 10
     ratio_of_covalent_radii = 0.7
@@ -28,6 +28,7 @@ class Config:
     rattle_mutation_prob = 0.3
     crossover_prob = 0.7
     Z = 151
+
 
 def init_dirs():
     Config.output_root.mkdir(exist_ok=True)
@@ -50,8 +51,7 @@ def generate_initial_db(slab):
 
     sg = StartGenerator(slab, atom_numbers, blmin, box_to_place_in=[p0, [v1, v2, v3]], test_too_far=False)
 
-    db =PrepareDB(
-        db_file_name='gadb.db', simulation_cell=slab)
+    db = PrepareDB(db_file_name='gadb.db', simulation_cell=slab)
     for i in range(Config.pop_size):
         candidate = sg.get_new_candidate()
         candidate.info['confid'] = f"gen0_id{i}"
@@ -160,7 +160,6 @@ def main():
                                          dE=0.02)
 
     # 5. 主循环
-
     pop = Population(data_connection=db,
                      population_size=Config.pop_size,
                      comparator=comp)
