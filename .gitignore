@@ -1,4 +1,7 @@
 .idea/
 *.egg-info/
 ga_standard_results/
+__pycache__
+
 *.csv
+*.db
