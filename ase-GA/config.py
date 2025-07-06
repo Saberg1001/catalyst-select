@@ -2,10 +2,10 @@ from constant import CifFile, ModelPath, OutputRoot
 
 
 class Config(object):
-    pop_size = 2
+    pop_size = 3
     n_generations = 3
     ratio_of_covalent_radii = 0.7
-    fmax = 0.05
+    fmax = 0.5
     output_root = OutputRoot
     tournament_size = 3
     rattle_mutation_prob = 0.3
