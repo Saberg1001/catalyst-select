@@ -27,7 +27,7 @@ def init_dirs():
 
 
 def generate_initial_db(slab) -> PrepareDB:
-    atom_numbers = [8] * 21 + [74] * 1 + [23] * 1  # 撒21个O，1个W，1个V
+    atom_numbers = [8] * 1  # 撒21个O，1个W，1个V
     pos = slab.get_positions()
     cell = slab.get_cell()
     p0 = np.array([0.0, 0.0, np.max(pos[:, 2]) + 0.8])  # 表面最高点上方0.8Å
@@ -154,21 +154,28 @@ def main():
                                            number_of_generations=5,  # 检查间隔代数
                                            number_of_individuals=3)  # 需要重复的个体数
 
+    # 评估未松弛的候选结构
+    while dc.get_number_of_unrelaxed_candidates() > 0:
+        a = dc.get_an_unrelaxed_candidate()
+        a.calc = calc
+        # dyn = BFGS(a, trajectory=None, logfile=None)
+        # dyn.run(fmax=0.05, steps=100)
+        # a.info['key_value_pairs']['raw_score'] = -a.get_potential_energy()
+        energy, a = relax_structure(a, calc, 0, a.info['confid'])
+        set_raw_score(a, -float(energy))  # 最小化能量
+        a.calc.results['forces'] = a.calc.results['forces'].astype(np.float64)
+        a.calc.results['stress'] = a.calc.results['stress'].astype(np.float64)
+        dc.add_relaxed_step(a)
+    pop.update()
+
     for gen in range(Config.n_generations):
         print(f"\n--- Generation {gen + 1}/{Config.n_generations} ---")
 
-        # 评估未松弛的候选结构
-        while dc.get_number_of_unrelaxed_candidates() > 0:
-            a = dc.get_an_unrelaxed_candidate()
-            energy = float(relax_structure(a, calc, gen + 1, a.info['confid'])[0])
-            set_raw_score(a, -energy)  # 最小化能量
-            dc.add_relaxed_step(a)
+        # # 获取当前种群
+        # population = pop.get_current_population()
 
-        # 获取当前种群
-        population = pop.get_current_population()
-
-        # 记录结果
-        record_results(gen + 1, population, db)
+        # # 记录结果
+        # record_results(gen + 1, population, db)
 
         # 检查收敛
         if conv.converged():
@@ -191,7 +198,9 @@ def main():
                 a3.info['data'] = {'parents': [a1.info['confid']]}
                 a3.info['origin'] = 'mutation'
             a3.info['confid'] = f"gen{gen + 2}_id{i}"
-            db.add_unrelaxed_candidate(a3)
+            dc.add_unrelaxed_candidate(a3, description=desc)
+
+        pop.update()
 
     # 保存最佳结构
     best = pop.get_current_population()[0]
