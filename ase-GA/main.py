@@ -41,11 +41,12 @@ def generate_initial_db(slab) -> PrepareDB:
 
     sg = StartGenerator(slab, atom_numbers, blmin, box_to_place_in=[p0, [v1, v2, v3]], test_too_far=False)
 
-    db = PrepareDB(db_file_name=DBFileName, simulation_cell=slab)
-    for i in range(Config.pop_size):
-        candidate = sg.get_new_candidate()
-        candidate.info['confid'] = f"gen0_id{i}"
-        db.add_unrelaxed_candidate(candidate, description="x:x")
+    starting_population = [sg.get_new_candidate() for i in range(Config.pop_size)]
+    db = PrepareDB(
+        db_file_name=DBFileName, simulation_cell=slab, stoichiometry=atom_numbers
+    )
+    for a in starting_population:
+        db.add_unrelaxed_candidate(a)
     return db
 
 
