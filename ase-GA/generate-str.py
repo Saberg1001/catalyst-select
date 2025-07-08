@@ -59,4 +59,4 @@ def generate_structure(work_dir,output_dir):
     print("成功撒点并保存到 generate 路径")
 
 if __name__ == "__main__":
-    generate_structure(work_dir=Path('./cif/substrate.cif'),output_dir=Path('./generate/'))
+    generate_structure(work_dir=Path('Slab/substrate.cif'), output_dir=Path('./generate/'))
