@@ -11,6 +11,6 @@ dependencies = [
     "m3gnet",
     "matgl>=1.2.1",
     "pymatgen==2023.7.20",
-    "tensorflow-macos==2.10.0",
+    "tensorflow==2.10.0",
     "torch==1.12.1",
 ]
