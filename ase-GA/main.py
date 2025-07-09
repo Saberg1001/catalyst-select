@@ -1,5 +1,7 @@
 import json
+import os
 import shutil
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +28,17 @@ def init_dirs():
     (Config.output_root / "summary").mkdir(exist_ok=True)
 
 
+def sort_atoms_reference(atoms):
+    """使 atoms 的 get_chemical_symbols() 顺序与 target_symbols_order 保持一致"""
+    target_symbols_order = ["Ce", "O", "W", "V"]
+    symbol_indices = []
+    symbols = atoms.get_chemical_symbols()
+    for sym in target_symbols_order:
+        idx = [i for i, s in enumerate(symbols) if s == sym]
+        symbol_indices.extend(idx)
+    return atoms[symbol_indices]
+
+
 def generate_structure(slab):
     atom_numbers = [8] * 21 + [74] * 1 + [23] * 1  # 撒21个O，1个W，1个V
     pos = slab.get_positions()
@@ -43,15 +56,34 @@ def generate_structure(slab):
     return sg, atom_numbers
 
 
-def generate_initial_db(slab) -> PrepareDB:
-    sg, atom_numbers = generate_structure(slab)
-    starting_population = [sg.get_new_candidate() for i in range(Config.pop_size)]
+def generate_initial_db(slab, adsorbate_stoichiometry) -> PrepareDB:
+    # 读取CIF文件
+    seed_Path = Config.seed_path  # 替换为你的CIF文件夹路径
+    seed_files = [f for f in os.listdir(seed_Path) if f.endswith('.cif')]
+    # 确保不超过种群大小
+    seed_files = seed_files[:Config.pop_size]
+    # 读取并处理CIF文件
+    starting_population = []
+    for seed_file in seed_files:
+        atoms = read(os.path.join(seed_Path, seed_file))
+        atoms = sort_atoms_reference(atoms)
+        formula = atoms.get_chemical_formula()
+        print(formula)
+        # 这里可能需要根据你的需求对atoms进行一些处理
+        starting_population.append(atoms)
 
+    # 正确的方式：使用指定的、仅包含吸附原子的化学计量比来初始化数据库
     db = PrepareDB(
-        db_file_name=DBFileName, simulation_cell=slab, stoichiometry=atom_numbers
+        db_file_name=DBFileName,
+        simulation_cell=slab,
+        stoichiometry=adsorbate_stoichiometry
     )
+
     for i, a in enumerate(starting_population):
-        a.info['confid'] = f"{i}"
+        # 种子文件是完整的结构（slab+吸附物），这是正确的
+        # add_unrelaxed_candidate 会自动处理，因为它知道什么是固定的(slab)
+        # 和什么是可变的(stoichiometry)
+        a.info['confid'] = f"seed_{i}"  # 初始种群使用独立的命名
         db.add_unrelaxed_candidate(a)
     return db
 
@@ -119,23 +151,26 @@ def main():
     init_dirs()
     slab = read(Config.slab_file)
     slab.pbc = [True, True, False]
+    adsorbate_atom_numbers = [8] * 21 + [74] * 1 + [23] * 1  # 21个O, 1个W, 1个V
+    n_top = len(adsorbate_atom_numbers)  # = 23
+    adsorbate_stoichiometry = dict(Counter(adsorbate_atom_numbers))
+
     calc = M3GNetCalculator(
         potential=Potential(M3GNet.from_dir(Config.model_path)),
         device="cuda"
     )
     if not Path(DBFileName).exists():
-        db = generate_initial_db(slab)
+        db = generate_initial_db(slab, adsorbate_stoichiometry)
     else:
         dc = DataConnection(DBFileName)
         if dc.get_number_of_unrelaxed_candidates() == 0:
             # 如果数据库存在且没有未松弛结构，则需要清空数据库
             Path(DBFileName).unlink()
-            db = generate_initial_db(slab)
+            db = generate_initial_db(slab, adsorbate_stoichiometry)
 
     # 4. 设置GA算子
-    n_top = 23  # 往上撒的原子数
-    atom_numbers = [8] * 21 + [74] * 1 + [23] * 1  # 撒21个O，1个W，1个V
-    unique_atom_types = get_all_atom_types(slab, atom_numbers)
+
+    unique_atom_types = get_all_atom_types(slab, adsorbate_atom_numbers)
     blmin = closest_distances_generator(atom_numbers=unique_atom_types,
                                         ratio_of_covalent_radii=Config.ratio_of_covalent_radii)
     # 交叉算子
@@ -166,10 +201,8 @@ def main():
     # 评估未松弛的候选结构
     while dc.get_number_of_unrelaxed_candidates() > 0:
         a = dc.get_an_unrelaxed_candidate()
+        a.pbc = [True, True, False]
         a.calc = calc
-        # dyn = BFGS(a, trajectory=None, logfile=None)
-        # dyn.run(fmax=0.05, steps=100)
-        # a.info['key_value_pairs']['raw_score'] = -a.get_potential_energy()
         energy, a = relax_structure(a, calc, 0, a.info['confid'])
         set_raw_score(a, -float(energy))  # 最小化能量
         a.calc.results['forces'] = a.calc.results['forces'].astype(np.float64)
@@ -203,10 +236,10 @@ def main():
             dc.add_unrelaxed_candidate(a3, description=desc)
         for i in range(Config.n_crossovers + Config.n_mutations, Config.pop_size):
             sg, _ = generate_structure(slab)
-            a3=sg.get_new_candidate()
+            a3 = sg.get_new_candidate()
             a3.info['confid'] = f"{i}"
-            desc="random:generate"
-            db.add_unrelaxed_candidate(a3,description=desc)
+            desc = "random:generate"
+            db.add_unrelaxed_candidate(a3, description=desc)
         while dc.get_number_of_unrelaxed_candidates() > 0:
             a = dc.get_an_unrelaxed_candidate()
             a.calc = calc
