@@ -5,3 +5,6 @@ __pycache__
 
 *.csv
 *.db
+example_*
+generate-str.py
+K-point.py
