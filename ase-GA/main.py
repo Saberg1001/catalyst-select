@@ -80,9 +80,6 @@ def generate_initial_db(slab, adsorbate_stoichiometry) -> PrepareDB:
     )
 
     for i, a in enumerate(starting_population):
-        # 种子文件是完整的结构（slab+吸附物），这是正确的
-        # add_unrelaxed_candidate 会自动处理，因为它知道什么是固定的(slab)
-        # 和什么是可变的(stoichiometry)
         a.info['confid'] = f"seed_{i}"  # 初始种群使用独立的命名
         db.add_unrelaxed_candidate(a)
     return db
@@ -210,6 +207,8 @@ def main():
         dc.add_relaxed_step(a)
     pop.update()
 
+    global_id_counter = Config.pop_size
+
     for gen in range(Config.n_generations):
         print(f"\n--- Generation {gen + 1}/{Config.n_generations} ---")
         if conv.converged():
@@ -225,21 +224,24 @@ def main():
             a3, desc = pairing.get_new_individual([a1, a2])
             a3.info['data'] = {'parents': [a1.info['confid'], a2.info['confid']]}
             a3.info['origin'] = 'crossover'
-            a3.info['confid'] = f"gen{gen + 2}_id{i}"
+            a3.info['confid'] = f"gen{gen + 1}_id{i}"
             dc.add_unrelaxed_candidate(a3, description=desc)
         for i in range(Config.n_crossovers, Config.n_crossovers + Config.n_mutations):
             a1, _ = pop.get_two_candidates()
             a3, desc = rattle.get_new_individual([a1])
             a3.info['data'] = {'parents': [a1.info['confid']]}
             a3.info['origin'] = 'mutation'
-            a3.info['confid'] = f"gen{gen + 2}_id{i}"
+            a3.info['confid'] = f"gen{gen + 1}_id{i}"
             dc.add_unrelaxed_candidate(a3, description=desc)
+            global_id_counter += 1
         for i in range(Config.n_crossovers + Config.n_mutations, Config.pop_size):
             sg, _ = generate_structure(slab)
             a3 = sg.get_new_candidate()
-            a3.info['confid'] = f"{i}"
+            a3.info['confid'] = f"gen{gen + 1}_id{global_id_counter}"
+            a3.info['origin'] = 'random'
             desc = "random:generate"
             db.add_unrelaxed_candidate(a3, description=desc)
+            global_id_counter += 1
         while dc.get_number_of_unrelaxed_candidates() > 0:
             a = dc.get_an_unrelaxed_candidate()
             a.calc = calc

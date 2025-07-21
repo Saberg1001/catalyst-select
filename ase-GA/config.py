@@ -3,7 +3,7 @@ from constant import SlabFile, ModelPath, OutputRoot, SeedPath
 
 class Config(object):
     pop_size = 10
-    n_generations = 5
+    n_generations = 2
     ratio_of_covalent_radii = 0.7
     fmax = 0.5
     output_root = OutputRoot
