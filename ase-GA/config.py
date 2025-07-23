@@ -3,9 +3,9 @@ from constant import SlabFile, ModelPath, OutputRoot, SeedPath
 
 class Config(object):
     pop_size = 10
-    n_generations = 2
+    n_generations = 1000
     ratio_of_covalent_radii = 0.7
-    fmax = 0.5
+    fmax = 0.05
     output_root = OutputRoot
     tournament_size = 3
     rattle_mutation_prob = 0.3
